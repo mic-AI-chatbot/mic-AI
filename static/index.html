@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mic - AI Companion</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <style>
+        body {
+            background-color: #121212;
+            color: #ffffff;
+        }
+        .chat-container {
+            height: calc(100vh - 150px);
+            overflow-y: auto;
+        }
+        .message {
+            margin-bottom: 15px;
+        }
+        .user-message .card-body {
+            background-color: #0d6efd;
+            color: white;
+        }
+        .ai-message .card-body {
+            background-color: #3a3a3a;
+            color: white !important;
+        }
+        .ai-message .card-body pre,
+        .ai-message .card-body code {
+            color: white !important;
+        }
+        .card {
+            border: none;
+        }
+        .form-control {
+            background-color: #3a3a3a;
+            color: white;
+            border-color: #555;
+        }
+        .form-control:focus {
+            background-color: #3a3a3a;
+            color: white;
+            border-color: #0d6efd;
+            box-shadow: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Modal -->
+    <div class="modal fade" id="loginModal" tabindex="-1" aria-labelledby="loginModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="loginModalLabel">Login Required</h5>
+                </div>
+                <div class="modal-body">
+                    <form id="login-form">
+                        <div class="mb-3">
+                            <label for="username-input" class="form-label">Username</label>
+                            <input type="text" class="form-control" id="username-input" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="password-input" class="form-label">Password</label>
+                            <input type="password" class="form-control" id="password-input" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Login</button>
+                        <div id="login-error" class="text-danger mt-2"></div>
+                    </form>
+                     <div class="mt-3 text-center">
+                        <a href="/static/register.html">Don't have an account? Register here.</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">mic</a>
+            <div class="d-flex align-items-center">
+                <div id="user-info" class="text-white me-3"></div>
+                <div id="subscription-info" class="text-white me-3 small"></div>
+            </div>
+            <button id="logout-button" class="btn btn-danger">Logout</button>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-md-3 bg-dark pt-3">
+                <h3>Toolbox</h3>
+                <div id="tool-list" class="list-group" style="max-height: calc(100vh - 200px); overflow-y: auto;">
+                    <!-- Tools populated by JS -->
+                </div>
+            </div>
+            <div class="col-md-9">
+                <div class="chat-container p-3" id="chat-container">
+                    <!-- Messages will appear here -->
+                </div>
+                <form id="input-form" class="p-3 bg-dark">
+                    <div class="input-group">
+                        <input type="text" id="prompt-input" class="form-control" placeholder="Type your message..." autocomplete="off" autofocus>
+                        <button type="submit" id="send-button" class="btn btn-primary">➤</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>
+        marked.setOptions({
+            highlight: function(code, lang) {
+                const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+                return hljs.highlight(code, { language }).value;
+            }
+        });
+
+        const chatContainer = document.getElementById('chat-container');
+        const inputForm = document.getElementById('input-form');
+        const promptInput = document.getElementById('prompt-input');
+        const logoutButton = document.getElementById('logout-button');
+        const userInfo = document.getElementById('user-info');
+        const toolList = document.getElementById('tool-list');
+        
+        const loginModalElement = document.getElementById('loginModal');
+        const loginModal = new bootstrap.Modal(loginModalElement);
+        const loginForm = document.getElementById('login-form');
+        const loginError = document.getElementById('login-error');
+
+        let conversationHistory = [];
+
+        function parseJwt(token) {
+            try {
+                return JSON.parse(atob(token.split('.')[1]));
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function logoutUser() {
+            localStorage.removeItem('mic_token');
+            conversationHistory = [];
+            chatContainer.innerHTML = '';
+            userInfo.textContent = '';
+            subscriptionInfo.textContent = ''; // Clear subscription info
+            toolList.innerHTML = '';
+            loginModal.show();
+        }
+
+        const subscriptionInfo = document.getElementById('subscription-info'); // Define subscriptionInfo here
+
+        async function fetchUserStatus() {
+            const token = localStorage.getItem('mic_token');
+            if (!token) return;
+
+            try {
+                const response = await fetch('/api/user/status', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (response.status === 401) {
+                    logoutUser();
+                    return;
+                }
+                if (!response.ok) {
+                    throw new Error('Could not fetch user status.');
+                }
+
+                const userStatus = await response.json();
+                userInfo.textContent = `Logged in as: ${userStatus.username}`;
+                subscriptionInfo.innerHTML = `Tier: ${userStatus.subscription_tier} | LLM: ${userStatus.llm_queries_left} | Web: ${userStatus.web_searches_left} | File: ${userStatus.file_processing_left}`;
+
+            } catch (error) {
+                console.error('Error fetching user status:', error);
+                subscriptionInfo.textContent = 'Status unavailable.';
+            }
+        }
+
+        async function populateTools() {
+            const token = localStorage.getItem('mic_token');
+            if (!token) return;
+
+            try {
+                const response = await fetch('/api/tools', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (response.status === 401) {
+                    logoutUser();
+                    return;
+                }
+                if (!response.ok) {
+                    throw new Error('Could not fetch tools.');
+                }
+
+                const data = await response.json();
+                toolList.innerHTML = ''; // Clear existing tools
+                data.tools.forEach(toolName => {
+                    const toolItem = document.createElement('a');
+                    toolItem.href = '#';
+                    toolItem.classList.add('list-group-item', 'list-group-item-action', 'bg-dark', 'text-white');
+                    toolItem.textContent = toolName;
+                    toolItem.onclick = (e) => {
+                        e.preventDefault();
+                        promptInput.value = `Use the ${toolName} tool to...`;
+                        promptInput.focus();
+                    };
+                    toolList.appendChild(toolItem);
+                });
+
+            } catch (error) {
+                console.error('Error fetching tools:', error);
+                const errorItem = document.createElement('div');
+                errorItem.classList.add('list-group-item', 'text-danger');
+                errorItem.textContent = 'Failed to load tools.';
+                toolList.innerHTML = '';
+                toolList.appendChild(errorItem);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const token = localStorage.getItem('mic_token');
+            if (token) {
+                const decodedToken = parseJwt(token);
+                if (decodedToken && decodedToken.exp * 1000 > Date.now()) {
+                    fetchUserStatus(); // Fetch and display user status
+                    addMessage("Hello! I'm mic.", 'ai');
+                    conversationHistory.push({ role: 'ai', content: 'Hello! I\'m mic.' });
+                    populateTools();
+                } else {
+                    logoutUser();
+                }
+            }
+            else {
+                loginModal.show();
+            }
+        });
+
+        logoutButton.addEventListener('click', logoutUser);
+        inputForm.addEventListener('submit', handleTextPrompt);
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            loginError.textContent = '';
+            const username = document.getElementById('username-input').value;
+            const password = document.getElementById('password-input').value;
+
+            const formData = new URLSearchParams();
+            formData.append('username', username);
+            formData.append('password', password);
+
+            try {
+                const response = await fetch('/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('Invalid username or password.');
+                }
+
+                const data = await response.json();
+                localStorage.setItem('mic_token', data.access_token);
+                const decodedToken = parseJwt(data.access_token);
+                
+                loginModal.hide();
+                fetchUserStatus(); // Fetch and display user status
+                addMessage("Hello! I'm mic.", 'ai');
+                conversationHistory.push({ role: 'ai', content: 'Hello! I\'m mic.' });
+                populateTools();
+
+            } catch (error) {
+                loginError.textContent = error.message;
+            }
+        });
+
+        async function handleTextPrompt(e) {
+            e.preventDefault();
+            const token = localStorage.getItem('mic_token');
+            if (!token) {
+                loginModal.show();
+                return;
+            }
+
+            const prompt = promptInput.value.trim();
+            if (!prompt) return;
+            promptInput.value = '';
+
+            addMessage(prompt, 'user');
+            conversationHistory.push({ role: 'user', content: prompt });
+
+            const aiMessageDiv = createMessageDiv('ai');
+            let fullResponse = "";
+
+            try {
+                const response = await fetch('/api/prompt', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ history: conversationHistory })
+                });
+
+                if (response.status === 401) {
+                    logoutUser();
+                    return;
+                }
+                if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value, { stream: true });
+                    const lines = chunk.split('\n').filter(line => line.startsWith('data:'));
+
+                    for (const line of lines) {
+                        const jsonStr = line.substring(5).trim();
+                        if (jsonStr) {
+                            try {
+                                const data = JSON.parse(jsonStr);
+                                switch (data.type) {
+                                    case 'token':
+                                        fullResponse += data.content;
+                                        break;
+                                    case 'tool_call':
+                                        fullResponse += `\n\n*Using tool: ${data.tool_name}...*\n\n`;
+                                        break;
+                                    case 'tool_result':
+                                        fullResponse += `*Tool Result:*\n\`\`\`\n${data.content}\n\`\`\`\n`;
+                                        break;
+                                    case 'error':
+                                        fullResponse += `\n\n**Error:** ${data.content}`;
+                                        break;
+                                }
+                                aiMessageDiv.querySelector('.card-body').innerHTML = marked.parse(fullResponse);
+                            } catch (e) {
+                                console.error("Failed to parse SSE data:", e);
+                            }
+                        }
+                    }
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+                conversationHistory.push({ role: 'ai', content: fullResponse.trim() });
+
+            } catch (error) {
+                console.error("Error streaming response:", error);
+                aiMessageDiv.querySelector('.card-body').textContent = "Sorry, an error occurred.";
+            }
+        }
+
+        function createMessageDiv(sender) {
+            const messageWrapper = document.createElement('div');
+            messageWrapper.classList.add('message', `${sender}-message`);
+            const card = document.createElement('div');
+            card.classList.add('card');
+            const cardBody = document.createElement('div');
+            cardBody.classList.add('card-body');
+            card.appendChild(cardBody);
+            messageWrapper.appendChild(card);
+            chatContainer.appendChild(messageWrapper);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return messageWrapper;
+        }
+
+        function addMessage(text, sender) {
+            const messageDiv = createMessageDiv(sender);
+            messageDiv.querySelector('.card-body').innerHTML = marked.parse(text);
+        }
+    </script>
+</body>
+</html>
